@@ -6,7 +6,10 @@
   "scripts": {
     "legacy": "ts-node legacy/orderReportLegacy.ts",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "test:golden": "jest tests/goldenMaster.test.js",
+    "test:unit": "jest tests/unit",
+    "generate-golden": "node scripts/generateGolden.js"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
