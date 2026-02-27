@@ -9,7 +9,7 @@ const {
   round2,
   parseCsv,
   parseCsvSafe,
-} = require('../../legacy/orderReportLegacy.js');
+} = require('../../src/orderReport.js');
 
 describe('round2', () => {
   it('arrondit à 2 décimales', () => {

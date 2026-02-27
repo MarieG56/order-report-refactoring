@@ -1,7 +1,7 @@
 /**
  * Tests unitaires : calcul de la taxe.
  */
-const { CONFIG, computeTax } = require('../../legacy/orderReportLegacy.js');
+const { CONFIG, computeTax } = require('../../src/orderReport.js');
 
 const makeItem = (productId, qty, unitPrice) => ({
   id: 'O1',

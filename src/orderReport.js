@@ -1,6 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const { parseCsv, parseCsvSafe } = require('./csvParser');
+const { CONFIG } = require('./config');
+const {
+  getPromoDiscount,
+  computeVolumeDiscount,
+  computeLoyaltyDiscount,
+  applyDiscountCap,
+} = require('./discountCalculator');
 
 /**
  * Modèles typés des entités (alignés sur orderReport.ts).
@@ -54,39 +61,25 @@ const { parseCsv, parseCsvSafe } = require('./csvParser');
 // Répertoire des données (legacy) par défaut : depuis src/ on pointe vers legacy/
 const DEFAULT_DATA_DIR = path.join(__dirname, '..', 'legacy');
 
-const CONFIG = {
-  TAX: 0.2,
-  SHIPPING_LIMIT: 50,
-  SHIP: 5.0,
-  PREMIUM_THRESHOLD: 1000,
-  LOYALTY_RATIO: 0.01,
-  HANDLING_FEE: 2.5,
-  MAX_DISCOUNT: 200,
-  MORNING_BONUS_HOUR: 10,
-  MORNING_BONUS_RATE: 0.03,
-  WEEKEND_DISCOUNT_BONUS: 1.05,
-  REMOTE_ZONE_MULTIPLIER: 1.2,
-  HEAVY_WEIGHT_THRESHOLD: 20,
-  HEAVY_WEIGHT_PER_KG: 0.25,
-  INTERMEDIATE_WEIGHT_THRESHOLD: 5,
-  INTERMEDIATE_WEIGHT_PER_KG: 0.3,
-  BASE_WEIGHT_THRESHOLD: 10,
-  CURRENCY_RATES: { EUR: 1.0, USD: 1.1, GBP: 0.85 },
-  VOLUME_DISCOUNT_TIERS: [
-    { min: 1000, rate: 0.2, level: 'PREMIUM' },
-    { min: 500, rate: 0.15 },
-    { min: 100, rate: 0.1 },
-    { min: 50, rate: 0.05 },
-  ],
-  LOYALTY_TIERS: [
-    { minPoints: 500, rate: 0.15, cap: 100 },
-    { minPoints: 100, rate: 0.1, cap: 50 },
-  ],
-};
+/**
+ * Abstraction du filesystem pour isoler l'I/O de la logique métier (testable).
+ * @typedef {{ readFileSync: (path: string, enc: string) => string; writeFileSync: (path: string, data: string) => void }} FileSystem
+ */
 
-function loadCustomers(baseDir) {
+function createNodeFileSystem() {
+  return {
+    readFileSync(filePath, encoding) {
+      return fs.readFileSync(filePath, encoding);
+    },
+    writeFileSync(filePath, data) {
+      fs.writeFileSync(filePath, data);
+    },
+  };
+}
+
+function loadCustomers(baseDir, fsx) {
   const filePath = path.join(baseDir, 'data', 'customers.csv');
-  const lines = parseCsv(filePath);
+  const lines = parseCsv(filePath, fsx);
   const customers = {};
   for (const line of lines) {
     const p = line.split(',');
@@ -101,9 +94,9 @@ function loadCustomers(baseDir) {
   return customers;
 }
 
-function loadProducts(baseDir) {
+function loadProducts(baseDir, fsx) {
   const filePath = path.join(baseDir, 'data', 'products.csv');
-  const lines = parseCsv(filePath);
+  const lines = parseCsv(filePath, fsx);
   const products = {};
   for (const line of lines) {
     try {
@@ -123,9 +116,9 @@ function loadProducts(baseDir) {
   return products;
 }
 
-function loadShippingZones(baseDir) {
+function loadShippingZones(baseDir, fsx) {
   const filePath = path.join(baseDir, 'data', 'shipping_zones.csv');
-  const lines = parseCsv(filePath);
+  const lines = parseCsv(filePath, fsx);
   const zones = {};
   for (const line of lines) {
     const p = line.split(',');
@@ -138,9 +131,9 @@ function loadShippingZones(baseDir) {
   return zones;
 }
 
-function loadPromotions(baseDir) {
+function loadPromotions(baseDir, fsx) {
   const filePath = path.join(baseDir, 'data', 'promotions.csv');
-  const lines = parseCsvSafe(filePath);
+  const lines = parseCsvSafe(filePath, fsx);
   const promotions = {};
   for (const line of lines) {
     const p = line.split(',');
@@ -154,9 +147,9 @@ function loadPromotions(baseDir) {
   return promotions;
 }
 
-function loadOrders(baseDir) {
+function loadOrders(baseDir, fsx) {
   const filePath = path.join(baseDir, 'data', 'orders.csv');
-  const lines = parseCsv(filePath);
+  const lines = parseCsv(filePath, fsx);
   const orders = [];
   for (const line of lines) {
     try {
@@ -186,19 +179,6 @@ function computeLoyaltyPoints(orders) {
     points[cid] += o.qty * o.unit_price * CONFIG.LOYALTY_RATIO;
   }
   return points;
-}
-
-function getPromoDiscount(promoCode, promotions) {
-  if (!promoCode || !promotions[promoCode]) return { rate: 0, fixed: 0 };
-  const promo = promotions[promoCode];
-  if (!promo.active) return { rate: 0, fixed: 0 };
-  if (promo.type === 'PERCENTAGE') {
-    return { rate: parseFloat(promo.value) / 100, fixed: 0 };
-  }
-  if (promo.type === 'FIXED') {
-    return { rate: 0, fixed: parseFloat(promo.value) };
-  }
-  return { rate: 0, fixed: 0 };
 }
 
 function computeLineTotal(order, product, promotions) {
@@ -234,39 +214,6 @@ function buildTotalsByCustomer(orders, products, promotions) {
     totals[cid].morningBonus += morningBonus;
   }
   return totals;
-}
-
-function computeVolumeDiscount(subtotal, level, firstOrderDate) {
-  let disc = 0;
-  if (subtotal > 50) disc = subtotal * 0.05;
-  if (subtotal > 100) disc = subtotal * 0.1;
-  if (subtotal > 500) disc = subtotal * 0.15;
-  if (subtotal > 1000 && level === 'PREMIUM') disc = subtotal * 0.2;
-  const dayOfWeek = firstOrderDate ? new Date(firstOrderDate).getDay() : 0;
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
-    disc *= CONFIG.WEEKEND_DISCOUNT_BONUS;
-  }
-  return disc;
-}
-
-function computeLoyaltyDiscount(loyaltyPoints) {
-  const pts = loyaltyPoints || 0;
-  if (pts > 500) return Math.min(pts * 0.15, 100);
-  if (pts > 100) return Math.min(pts * 0.1, 50);
-  return 0;
-}
-
-function applyDiscountCap(volumeDisc, loyaltyDisc) {
-  let total = volumeDisc + loyaltyDisc;
-  if (total <= CONFIG.MAX_DISCOUNT) {
-    return { volumeDisc, loyaltyDisc, total };
-  }
-  const ratio = CONFIG.MAX_DISCOUNT / total;
-  return {
-    volumeDisc: volumeDisc * ratio,
-    loyaltyDisc: loyaltyDisc * ratio,
-    total: CONFIG.MAX_DISCOUNT,
-  };
 }
 
 function computeTax(customerItems, products, taxableSubtotal) {
@@ -383,12 +330,13 @@ function buildReport(customers, totalsByCustomer, loyaltyPoints, products, shipp
   return { text: lines.join('\n'), jsonData };
 }
 
-function run(baseDir = DEFAULT_DATA_DIR) {
-  const customers = loadCustomers(baseDir);
-  const products = loadProducts(baseDir);
-  const shippingZones = loadShippingZones(baseDir);
-  const promotions = loadPromotions(baseDir);
-  const orders = loadOrders(baseDir);
+function run(baseDir = DEFAULT_DATA_DIR, deps = {}) {
+  const fsx = deps.fsx ?? createNodeFileSystem();
+  const customers = loadCustomers(baseDir, fsx);
+  const products = loadProducts(baseDir, fsx);
+  const shippingZones = loadShippingZones(baseDir, fsx);
+  const promotions = loadPromotions(baseDir, fsx);
+  const orders = loadOrders(baseDir, fsx);
   const loyaltyPoints = computeLoyaltyPoints(orders);
   const totalsByCustomer = buildTotalsByCustomer(orders, products, promotions);
   const { text, jsonData } = buildReport(
@@ -399,7 +347,7 @@ function run(baseDir = DEFAULT_DATA_DIR) {
     shippingZones
   );
   const outputPath = path.join(baseDir, 'output.json');
-  fs.writeFileSync(outputPath, JSON.stringify(jsonData, null, 2));
+  fsx.writeFileSync(outputPath, JSON.stringify(jsonData, null, 2));
   return text;
 }
 
@@ -410,6 +358,7 @@ if (require.main === module) {
 module.exports = {
   run,
   CONFIG,
+  createNodeFileSystem,
   computeVolumeDiscount,
   computeLoyaltyDiscount,
   applyDiscountCap,

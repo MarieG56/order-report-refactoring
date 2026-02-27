@@ -6,7 +6,7 @@ const {
   computeVolumeDiscount,
   computeLoyaltyDiscount,
   applyDiscountCap,
-} = require('../../legacy/orderReportLegacy.js');
+} = require('../../src/orderReport.js');
 
 // Date en milieu de semaine pour éviter le bonus weekend sur les remises.
 const WEEKDAY = '2024-01-02'; // mardi

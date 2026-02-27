@@ -5,7 +5,7 @@ const {
   CONFIG,
   computeShipping,
   computeHandling,
-} = require('../../legacy/orderReportLegacy.js');
+} = require('../../src/orderReport.js');
 
 const defaultZones = {
   ZONE1: { zone: 'ZONE1', base: 5.0, per_kg: 0.5 },
