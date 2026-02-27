@@ -2,6 +2,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseCsvLines, parseCsvLinesSafe } from './csvParser';
+import { CONFIG } from './config';
+import {
+  getPromoDiscount,
+  computeVolumeDiscount,
+  computeLoyaltyDiscount,
+  applyDiscountCap,
+} from './discountCalculator';
 
 export type CustomerLevel = 'BASIC' | 'PREMIUM' | (string & {});
 export type PromotionType = 'PERCENTAGE' | 'FIXED' | (string & {});
@@ -92,50 +99,7 @@ export interface Logger {
 
 export const NoopLogger: Logger = {};
 
-/**
- * Toutes les constantes métier sont regroupées ici.
- * Ça rend les règles plus lisibles.
- */
-export const CONFIG = {
-  TAX: 0.2,
-  SHIPPING_LIMIT: 50,
-  LOYALTY_RATIO: 0.01,
-  HANDLING_FEE: 2.5,
-  MAX_DISCOUNT: 200,
-
-  MORNING_BONUS_HOUR: 10,
-  MORNING_BONUS_RATE: 0.03,
-
-  WEEKEND_DISCOUNT_BONUS: 1.05,
-  REMOTE_ZONE_MULTIPLIER: 1.2,
-
-  HEAVY_WEIGHT_THRESHOLD: 20,
-  HEAVY_WEIGHT_PER_KG: 0.25,
-
-  INTERMEDIATE_WEIGHT_THRESHOLD: 5,
-  INTERMEDIATE_WEIGHT_PER_KG: 0.3,
-
-  // Seuil implicite dans le legacy, qu'on a nommé.
-  BASE_WEIGHT_THRESHOLD: 10,
-
-  CURRENCY_RATES: { EUR: 1.0, USD: 1.1, GBP: 0.85 } as Record<string, number>,
-
-  /**
-   * Ordre important : on reproduit le comportement legacy.
-   * Le dernier palier applicable écrase les précédents.
-   */
-  VOLUME_DISCOUNT_TIERS: [
-    { min: 50, rate: 0.05 } as const,
-    { min: 100, rate: 0.1 } as const,
-    { min: 500, rate: 0.15 } as const,
-    { min: 1000, rate: 0.2, level: 'PREMIUM' as const },
-  ],
-
-  LOYALTY_TIERS: [
-    { minPoints: 100, rate: 0.1, cap: 50 } as const,
-    { minPoints: 500, rate: 0.15, cap: 100 } as const,
-  ],
-};
+export { CONFIG };
 
 /* ============================= LOADERS ============================= */
 
@@ -294,27 +258,6 @@ function computeLoyaltyPoints(orders: Order[]): Record<string, number> {
   return points;
 }
 
-function getPromoDiscount(
-  promoCode: string,
-  promotions: Record<string, Promotion>
-): { rate: number; fixed: number } {
-  if (!promoCode || !promotions[promoCode]) return { rate: 0, fixed: 0 };
-
-  const promo = promotions[promoCode];
-  if (!promo.active) return { rate: 0, fixed: 0 };
-
-  if (promo.type === 'PERCENTAGE') {
-    return { rate: parseFloat(promo.value) / 100, fixed: 0 };
-  }
-
-  if (promo.type === 'FIXED') {
-    // On garde le comportement legacy : appliqué par quantité.
-    return { rate: 0, fixed: parseFloat(promo.value) };
-  }
-
-  return { rate: 0, fixed: 0 };
-}
-
 function computeLineTotal(
   order: Order,
   product: Partial<Product>,
@@ -367,73 +310,6 @@ function buildTotalsByCustomer(
   }
 
   return totals;
-}
-
-function computeVolumeDiscount(
-  subtotal: number,
-  level: CustomerLevel,
-  firstOrderDate: string
-): number {
-  let disc = 0;
-
-  for (const tier of CONFIG.VOLUME_DISCOUNT_TIERS) {
-    const levelOk = !('level' in tier) || tier.level === level;
-    if (levelOk && subtotal > tier.min) {
-      // Comportement intentionnel : le dernier palier applicable écrase
-      // les précédents. Les paliers sont ordonnés du plus bas au plus haut,
-      // donc on retient toujours le taux le plus favorable.
-      disc = subtotal * tier.rate;
-    }
-  }
-
-  // Le bonus weekend ne s'applique que si un palier a été atteint.
-  // Si aucun palier ne correspond, on multiplie par 0.
-  const dayOfWeek = firstOrderDate
-    ? new Date(firstOrderDate).getDay()
-    : 0;
-
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
-    disc *= CONFIG.WEEKEND_DISCOUNT_BONUS;
-  }
-
-  return disc;
-}
-
-/**
- * Comportement intentionnel : le dernier palier applicable écrase les
- * précédents, de la même façon que computeVolumeDiscount. Les paliers
- * sont triés par seuil croissant, donc on retient toujours le taux le
- * plus élevé atteint.
- */
-function computeLoyaltyDiscount(points: number): number {
-  let discount = 0;
-
-  for (const tier of CONFIG.LOYALTY_TIERS) {
-    if (points > tier.minPoints) {
-      discount = Math.min(points * tier.rate, tier.cap);
-    }
-  }
-
-  return discount;
-}
-
-function applyDiscountCap(
-  volumeDisc: number,
-  loyaltyDisc: number
-): { volumeDisc: number; loyaltyDisc: number; total: number } {
-  const total = volumeDisc + loyaltyDisc;
-
-  if (total <= CONFIG.MAX_DISCOUNT) {
-    return { volumeDisc, loyaltyDisc, total };
-  }
-
-  const ratio = CONFIG.MAX_DISCOUNT / total;
-
-  return {
-    volumeDisc: volumeDisc * ratio,
-    loyaltyDisc: loyaltyDisc * ratio,
-    total: CONFIG.MAX_DISCOUNT,
-  };
 }
 
 /**
