@@ -4,7 +4,7 @@ module.exports = {
   roots: ['<rootDir>'],
   testMatch: ['**/tests/**/*.test.js', '**/tests/**/*.test.ts'],
   moduleFileExtensions: ['js', 'ts', 'json'],
-  collectCoverageFrom: ['legacy/orderReportLegacy.js', 'legacy/orderReportLegacy.ts'],
+  collectCoverageFrom: ['src/orderReport.js'],
   coveragePathIgnorePatterns: ['/node_modules/', '/legacy/orderReportLegacyOriginal.js/'],
   verbose: true,
 };

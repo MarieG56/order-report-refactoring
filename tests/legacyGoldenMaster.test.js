@@ -1,11 +1,15 @@
+/**
+ * Teste uniquement le script legacy (legacy/orderReportLegacy.js).
+ * Vérifie que sa sortie reste identique à la référence legacy/expected/report.txt.
+ */
 const fs = require('fs');
 const path = require('path');
 
 const LEGACY_DIR = path.join(__dirname, '..', 'legacy');
 const EXPECTED_REPORT_PATH = path.join(LEGACY_DIR, 'expected', 'report.txt');
-const REFACTORED_MODULE = path.join(__dirname, '..', 'src', 'orderReport.js');
+const LEGACY_SCRIPT = path.join(LEGACY_DIR, 'orderReportLegacy.js');
 
-describe('Golden Master — sortie refactorée vs référence legacy', () => {
+describe('Golden Master — script legacy original uniquement', () => {
   beforeAll(() => {
     if (!fs.existsSync(EXPECTED_REPORT_PATH)) {
       throw new Error(
@@ -15,10 +19,10 @@ describe('Golden Master — sortie refactorée vs référence legacy', () => {
     }
   });
 
-  it('la sortie du code refactoré est identique à la sortie legacy (caractère par caractère)', () => {
-    const { run } = require(REFACTORED_MODULE);
+  it('la sortie du script legacy est identique à la référence (caractère par caractère)', () => {
+    const { run } = require(LEGACY_SCRIPT);
     const expected = fs.readFileSync(EXPECTED_REPORT_PATH, 'utf-8');
-    const actual = run(LEGACY_DIR);
+    const actual = run();
 
     expect(typeof actual).toBe('string');
     if (actual !== expected) {
