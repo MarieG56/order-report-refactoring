@@ -1,723 +1,375 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-/**
- * On utilise des unions plutôt que des string totalement libres
- * pour éviter les fautes de frappe sur les valeurs métier.
- * On laisse quand même une ouverture pour rester compatible
- * avec le legacy si d'autres valeurs sont ajoutées.
- */
-export type CustomerLevel = 'BASIC' | 'PREMIUM' | (string & {});
-export type PromotionType = 'PERCENTAGE' | 'FIXED' | (string & {});
-export type Currency = 'EUR' | 'USD' | 'GBP' | (string & {});
+// Constantes globales mal organisées
+const TAX = 0.2;
+const SHIPPING_LIMIT = 50;
+const SHIP = 5.0;
+const PREMIUM_THRESHOLD = 1000;
+const LOYALTY_RATIO = 0.01;
+const HANDLING_FEE = 2.5;
+const MAX_DISCOUNT = 200;
 
-export interface Customer {
-  id: string;
-  name: string;
-  level: CustomerLevel;
-  shipping_zone: string;
-  currency: Currency;
-}
+// Types minimaux (manque de typage propre)
+type Customer = any;
+type Order = any;
+type Product = any;
+type ShippingZone = any;
+type Promotion = any;
 
-export interface Product {
-  id: string;
-  name: string;
-  category: string;
-  price: number;
-  weight: number;
-  taxable: boolean;
-}
+// Fonction principale qui fait TOUT
+function run(): string {
+    const base = __dirname;
+    const custPath = path.join(base, 'data', 'customers.csv');
+    const ordPath = path.join(base, 'data', 'orders.csv');
+    const prodPath = path.join(base, 'data', 'products.csv');
+    const shipPath = path.join(base, 'data', 'shipping_zones.csv');
+    const promoPath = path.join(base, 'data', 'promotions.csv');
 
-export interface ShippingZone {
-  zone: string;
-  base: number;
-  per_kg: number;
-}
+    // Lecture fichier customers (parsing mélangé avec logique)
+    const customers: Record<string, Customer> = {};
+    const custData = fs.readFileSync(custPath, 'utf-8');
+    const custLines = custData.split('\n').filter(l => l.trim());
+    const custHeader = custLines[0].split(',');
+    for (let i = 1; i < custLines.length; i++) {
+        const parts = custLines[i].split(',');
+        const id = parts[0];
+        customers[id] = {
+            id: parts[0],
+            name: parts[1],
+            level: parts[2] || 'BASIC',
+            shipping_zone: parts[3] || 'ZONE1',
+            currency: parts[4] || 'EUR'
+        };
+    }
 
-export interface Promotion {
-  code: string;
-  type: PromotionType;
-  value: string;
-  active: boolean;
-}
+    // Lecture fichier products (duplication du parsing)
+    const products: Record<string, Product> = {};
+    const prodData = fs.readFileSync(prodPath, 'utf-8');
+    const prodLines = prodData.split('\n').filter(l => l.trim());
+    for (let i = 1; i < prodLines.length; i++) {
+        const parts = prodLines[i].split(',');
+        try {
+            products[parts[0]] = {
+                id: parts[0],
+                name: parts[1],
+                category: parts[2],
+                price: parseFloat(parts[3]),
+                weight: parseFloat(parts[4] || '1.0'),
+                taxable: parts[5] === 'true'
+            };
+        } catch (e) {
+            // Skip silencieux des erreurs
+            continue;
+        }
+    }
 
-export interface Order {
-  id: string;
-  customer_id: string;
-  product_id: string;
-  qty: number;
-  unit_price: number;
-  date: string;
-  promo_code: string;
-  time: string;
-}
+    // Lecture shipping zones (encore une autre variation du parsing)
+    const shippingZones: Record<string, ShippingZone> = {};
+    const shipData = fs.readFileSync(shipPath, 'utf-8');
+    const shipLines = shipData.split('\n').filter(l => l.trim());
+    for (let i = 1; i < shipLines.length; i++) {
+        const p = shipLines[i].split(',');
+        shippingZones[p[0]] = {
+            zone: p[0],
+            base: parseFloat(p[1]),
+            per_kg: parseFloat(p[2] || '0.5')
+        };
+    }
 
-export interface CustomerTotals {
-  subtotal: number;
-  items: Order[];
-  weight: number;
-  morningBonus: number;
-}
-
-export interface ReportJsonRow {
-  customer_id: string;
-  name: string;
-  total: number;
-  currency: Currency;
-  loyalty_points: number;
-}
-
-/**
- * Abstraction du filesystem pour tester la logique métier.
- */
-export interface FileSystem {
-  readFileSync(filePath: string, encoding: BufferEncoding): string;
-  writeFileSync(filePath: string, data: string): void;
-}
-
-export class NodeFileSystem implements FileSystem {
-  readFileSync(filePath: string, encoding: BufferEncoding): string {
-    return fs.readFileSync(filePath, encoding);
-  }
-  writeFileSync(filePath: string, data: string): void {
-    fs.writeFileSync(filePath, data);
-  }
-}
-
-/**
- * Logger optionnel.
- */
-export interface Logger {
-  debug?(message: string): void;
-  warn?(message: string): void;
-}
-
-export const NoopLogger: Logger = {};
-
-/**
- * Toutes les constantes métier sont regroupées ici pour rendre le tout plus lisible.
- */
-export const CONFIG = {
-  TAX: 0.2,
-  SHIPPING_LIMIT: 50,
-  LOYALTY_RATIO: 0.01,
-  HANDLING_FEE: 2.5,
-  MAX_DISCOUNT: 200,
-
-  MORNING_BONUS_HOUR: 10,
-  MORNING_BONUS_RATE: 0.03,
-
-  WEEKEND_DISCOUNT_BONUS: 1.05,
-  REMOTE_ZONE_MULTIPLIER: 1.2,
-
-  HEAVY_WEIGHT_THRESHOLD: 20,
-  HEAVY_WEIGHT_PER_KG: 0.25,
-
-  INTERMEDIATE_WEIGHT_THRESHOLD: 5,
-  INTERMEDIATE_WEIGHT_PER_KG: 0.3,
-
-  BASE_WEIGHT_THRESHOLD: 10,
-
-  CURRENCY_RATES: { EUR: 1.0, USD: 1.1, GBP: 0.85 } as Record<string, number>,
-
-  /**
-   * On reproduit le comportement legacy. Le dernier palier applicable écrase les précédents.
-   */
-  VOLUME_DISCOUNT_TIERS: [
-    { min: 50, rate: 0.05 } as const,
-    { min: 100, rate: 0.1 } as const,
-    { min: 500, rate: 0.15 } as const,
-    { min: 1000, rate: 0.2, level: 'PREMIUM' as const },
-  ],
-
-  LOYALTY_TIERS: [
-    { minPoints: 100, rate: 0.1, cap: 50 } as const,
-    { minPoints: 500, rate: 0.15, cap: 100 } as const,
-  ],
-};
-
-/*
- * Parsing volontairement simple pour garder la cohérence avec le legacy.
- */
-function parseCsvLines(
-  filePath: string,
-  fsx: FileSystem,
-  skipHeader = true
-): string[] {
-  const raw = fsx.readFileSync(filePath, 'utf-8');
-  const lines = raw.split('\n').filter((l) => l.trim());
-  return skipHeader ? lines.slice(1) : lines;
-}
-
-function parseCsvLinesSafe(
-  filePath: string,
-  fsx: FileSystem,
-  logger: Logger,
-  skipHeader = true
-): string[] {
-  try {
-    return parseCsvLines(filePath, fsx, skipHeader);
-  } catch {
-    logger.debug?.(`Optional file missing: ${filePath}`);
-    return [];
-  }
-}
-
-/* ============================= LOADERS ============================= */
-
-function loadCustomers(
-  baseDir: string,
-  fsx: FileSystem
-): Record<string, Customer> {
-  const filePath = path.join(baseDir, 'data', 'customers.csv');
-  const lines = parseCsvLines(filePath, fsx);
-
-  const customers: Record<string, Customer> = {};
-  for (const line of lines) {
-    const p = line.split(',');
-    customers[p[0]] = {
-      id: p[0],
-      name: p[1],
-      level: (p[2] as CustomerLevel) || 'BASIC',
-      shipping_zone: p[3] || 'ZONE1',
-      currency: (p[4] as Currency) || 'EUR',
-    };
-  }
-  return customers;
-}
-
-function loadProducts(
-  baseDir: string,
-  fsx: FileSystem,
-  logger: Logger
-): Record<string, Product> {
-  const filePath = path.join(baseDir, 'data', 'products.csv');
-  const lines = parseCsvLines(filePath, fsx);
-
-  const products: Record<string, Product> = {};
-  let skipped = 0;
-
-  for (const line of lines) {
-    const p = line.split(',');
+    // Lecture promotions (parsing légèrement différent encore)
+    const promotions: Record<string, Promotion> = {};
     try {
-      products[p[0]] = {
-        id: p[0],
-        name: p[1],
-        category: p[2],
-        price: parseFloat(p[3]),
-        weight: parseFloat(p[4] || '1.0'),
-        taxable: p[5] === 'true',
-      };
-    } catch (e) {
-      skipped++;
-      // On logue la ligne responsable de l'erreur pour faciliter le debug.
-      logger.warn?.(`Products: ligne invalide ignorée — "${line}" (${e})`);
-    }
-  }
-
-  if (skipped > 0) {
-    logger.debug?.(`Products: ${skipped} invalid lines skipped`);
-  }
-
-  return products;
-}
-
-function loadShippingZones(
-  baseDir: string,
-  fsx: FileSystem
-): Record<string, ShippingZone> {
-  const filePath = path.join(baseDir, 'data', 'shipping_zones.csv');
-  const lines = parseCsvLines(filePath, fsx);
-
-  const zones: Record<string, ShippingZone> = {};
-  for (const line of lines) {
-    const p = line.split(',');
-    zones[p[0]] = {
-      zone: p[0],
-      base: parseFloat(p[1]),
-      per_kg: parseFloat(p[2] || '0.5'),
-    };
-  }
-  return zones;
-}
-
-function loadPromotions(
-  baseDir: string,
-  fsx: FileSystem,
-  logger: Logger
-): Record<string, Promotion> {
-  const filePath = path.join(baseDir, 'data', 'promotions.csv');
-  const lines = parseCsvLinesSafe(filePath, fsx, logger);
-
-  const promotions: Record<string, Promotion> = {};
-  for (const line of lines) {
-    const p = line.split(',');
-    promotions[p[0]] = {
-      code: p[0],
-      type: p[1] as PromotionType,
-      value: p[2],
-      active: p[3] !== 'false',
-    };
-  }
-  return promotions;
-}
-
-function loadOrders(
-  baseDir: string,
-  fsx: FileSystem,
-  logger: Logger
-): Order[] {
-  const filePath = path.join(baseDir, 'data', 'orders.csv');
-  const lines = parseCsvLines(filePath, fsx);
-
-  const orders: Order[] = [];
-  let skipped = 0;
-
-  for (const line of lines) {
-    const p = line.split(',');
-    try {
-      orders.push({
-        id: p[0],
-        customer_id: p[1],
-        product_id: p[2],
-        qty: parseInt(p[3], 10),
-        unit_price: parseFloat(p[4]),
-        date: p[5],
-        promo_code: p[6] || '',
-        time: p[7] || '12:00',
-      });
-    } catch (e) {
-      skipped++;
-      // Ici aussi on logue la ligne concernée pour rendre 
-      // les erreurs de parsing diagnostiquables.
-      logger.warn?.(`Orders: ligne invalide ignorée — "${line}" (${e})`);
-    }
-  }
-
-  if (skipped > 0) {
-    logger.debug?.(`Orders: ${skipped} invalid lines skipped`);
-  }
-
-  return orders;
-}
-
-/* ============================= BUSINESS ============================= */
-
-/**
- * Les points sont calculés sur le montant brut (quantité*unit_price),
- * avant application des remises. Ils récompensent le volume commandé, 
- * pas le prix final payé.
- */
-function computeLoyaltyPoints(orders: Order[]): Record<string, number> {
-  const points: Record<string, number> = {};
-  for (const o of orders) {
-    if (!points[o.customer_id]) points[o.customer_id] = 0;
-    points[o.customer_id] += o.qty * o.unit_price * CONFIG.LOYALTY_RATIO;
-  }
-  return points;
-}
-
-function getPromoDiscount(
-  promoCode: string,
-  promotions: Record<string, Promotion>
-): { rate: number; fixed: number } {
-  if (!promoCode || !promotions[promoCode]) return { rate: 0, fixed: 0 };
-
-  const promo = promotions[promoCode];
-  if (!promo.active) return { rate: 0, fixed: 0 };
-
-  if (promo.type === 'PERCENTAGE') {
-    return { rate: parseFloat(promo.value) / 100, fixed: 0 };
-  }
-
-  if (promo.type === 'FIXED') {
-    // On garde le comportement legacy, appliqué par quantité.
-    return { rate: 0, fixed: parseFloat(promo.value) };
-  }
-
-  return { rate: 0, fixed: 0 };
-}
-
-function computeLineTotal(
-  order: Order,
-  product: Partial<Product>,
-  promotions: Record<string, Promotion>
-): { lineTotal: number; morningBonus: number } {
-  const basePrice =
-    product.price !== undefined ? product.price : order.unit_price;
-
-  const { rate, fixed } = getPromoDiscount(order.promo_code, promotions);
-
-  let lineTotal =
-    order.qty * basePrice * (1 - rate) - fixed * order.qty;
-
-  const hour = parseInt(String(order.time).split(':')[0], 10);
-  let morningBonus = 0;
-
-  if (hour < CONFIG.MORNING_BONUS_HOUR) {
-    morningBonus = lineTotal * CONFIG.MORNING_BONUS_RATE;
-  }
-
-  lineTotal -= morningBonus;
-
-  return { lineTotal, morningBonus };
-}
-
-function buildTotalsByCustomer(
-  orders: Order[],
-  products: Record<string, Product>,
-  promotions: Record<string, Promotion>
-): Record<string, CustomerTotals> {
-  const totals: Record<string, CustomerTotals> = {};
-
-  for (const o of orders) {
-    const cid = o.customer_id;
-    const prod = products[o.product_id] || ({} as Partial<Product>);
-    const { lineTotal, morningBonus } = computeLineTotal(
-      o,
-      prod,
-      promotions
-    );
-
-    if (!totals[cid]) {
-      totals[cid] = { subtotal: 0, items: [], weight: 0, morningBonus: 0 };
+        const promoData = fs.readFileSync(promoPath, 'utf-8');
+        const promoLines = promoData.split('\n').filter(l => l.trim());
+        for (let i = 1; i < promoLines.length; i++) {
+            const p = promoLines[i].split(',');
+            promotions[p[0]] = {
+                code: p[0],
+                type: p[1], // PERCENTAGE ou FIXED
+                value: p[2],
+                active: p[3] !== 'false'
+            };
+        }
+    } catch (err) {
+        // Si pas de fichier promo, on continue
     }
 
-    totals[cid].subtotal += lineTotal;
-    totals[cid].weight += (prod.weight ?? 1.0) * o.qty;
-    totals[cid].items.push(o);
-    totals[cid].morningBonus += morningBonus;
-  }
+    // Lecture orders (parsing avec try/catch mais logique mélangée)
+    const orders: Order[] = [];
+    const ordData = fs.readFileSync(ordPath, 'utf-8');
+    const ordLines = ordData.split('\n').filter(l => l.trim());
+    for (let i = 1; i < ordLines.length; i++) {
+        const parts = ordLines[i].split(',');
+        try {
+            const qty = parseInt(parts[3]);
+            const price = parseFloat(parts[4]);
 
-  return totals;
-}
-
-function computeVolumeDiscount(
-  subtotal: number,
-  level: CustomerLevel,
-  firstOrderDate: string
-): number {
-  let disc = 0;
-
-  for (const tier of CONFIG.VOLUME_DISCOUNT_TIERS) {
-    const levelOk = !('level' in tier) || tier.level === level;
-    if (levelOk && subtotal > tier.min) {
-      // le dernier palier applicable écrase les précédents. Les paliers sont 
-      // ordonnés du plus bas au plus haut, on garde le taux le plus favorable.
-      disc = subtotal * tier.rate;
-    }
-  }
-
-  // Le bonus weekend ne s'applique que si un palier a été atteint (disc > 0).
-  // Si aucun palier ne correspond, on multiplie volontairement par 0.
-  const dayOfWeek = firstOrderDate
-    ? new Date(firstOrderDate).getDay()
-    : 0;
-
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
-    disc *= CONFIG.WEEKEND_DISCOUNT_BONUS;
-  }
-
-  return disc;
-}
-
-/**
- * le dernier palier applicable écrase les précédents, comme dans 
- * computeVolumeDiscount. Les paliers sont triés par seuil croissant, 
- * donc on retient toujours le taux le plus élevé atteint.
- */
-function computeLoyaltyDiscount(points: number): number {
-  let discount = 0;
-
-  for (const tier of CONFIG.LOYALTY_TIERS) {
-    if (points > tier.minPoints) {
-      discount = Math.min(points * tier.rate, tier.cap);
-    }
-  }
-
-  return discount;
-}
-
-function applyDiscountCap(
-  volumeDisc: number,
-  loyaltyDisc: number
-): { volumeDisc: number; loyaltyDisc: number; total: number } {
-  const total = volumeDisc + loyaltyDisc;
-
-  if (total <= CONFIG.MAX_DISCOUNT) {
-    return { volumeDisc, loyaltyDisc, total };
-  }
-
-  const ratio = CONFIG.MAX_DISCOUNT / total;
-
-  return {
-    volumeDisc: volumeDisc * ratio,
-    loyaltyDisc: loyaltyDisc * ratio,
-    total: CONFIG.MAX_DISCOUNT,
-  };
-}
-
-/* 
- * le chemin détaillé calcule la base à partir du sous-total net de 
- * chaque ligne (quantité*prix effectif), puis applique la même remise
- * proportionnelle que le chemin rapide, ce qui garantit une cohérence totale.
- * La remise est répartie proportionnellement sur chaque ligne taxable plutôt
- * qu'appliquée ligne par ligne, ce qui préserve le montant total de remise.
- */
-function computeTax(
-  items: Order[],
-  products: Record<string, Product>,
-  taxableSubtotal: number
-): number {
-  let allTaxable = true;
-
-  for (const item of items) {
-    const prod = products[item.product_id];
-    if (prod && prod.taxable === false) {
-      allTaxable = false;
-      break;
-    }
-  }
-
-  if (allTaxable) {
-    return Math.round(taxableSubtotal * CONFIG.TAX * 100) / 100;
-  }
-
-  // On calcule d'abord le sous-total brut taxable (avant remise globale)
-  // pour déterminer la proportion de chaque ligne, puis on applique la
-  // remise proportionnellement pour rester cohérent.
-  let grossTaxableSubtotal = 0;
-  for (const item of items) {
-    const prod = products[item.product_id];
-    if (prod && prod.taxable !== false) {
-      grossTaxableSubtotal += item.qty * (prod.price || item.unit_price);
-    }
-  }
-
-  if (grossTaxableSubtotal === 0) return 0;
-
-  // taxableSubtotal est net de remise, il est réparti au prorata.
-  let tax = 0;
-  for (const item of items) {
-    const prod = products[item.product_id];
-    if (prod && prod.taxable !== false) {
-      const grossLine = item.qty * (prod.price || item.unit_price);
-      const netLine = grossLine * (taxableSubtotal / grossTaxableSubtotal);
-      tax += netLine * CONFIG.TAX;
-    }
-  }
-
-  return Math.round(tax * 100) / 100;
-}
-
-function computeShipping(
-  subtotal: number,
-  weight: number,
-  zone: string,
-  shippingZones: Record<string, ShippingZone>
-): number {
-  const shipZone =
-    shippingZones[zone] || { zone: '', base: 5.0, per_kg: 0.5 };
-
-  if (subtotal >= CONFIG.SHIPPING_LIMIT) {
-    if (weight > CONFIG.HEAVY_WEIGHT_THRESHOLD) {
-      return (
-        (weight - CONFIG.HEAVY_WEIGHT_THRESHOLD) *
-        CONFIG.HEAVY_WEIGHT_PER_KG
-      );
-    }
-    return 0;
-  }
-
-  let ship = shipZone.base;
-
-  if (weight > CONFIG.BASE_WEIGHT_THRESHOLD) {
-    ship =
-      shipZone.base +
-      (weight - CONFIG.BASE_WEIGHT_THRESHOLD) * shipZone.per_kg;
-  } else if (weight > CONFIG.INTERMEDIATE_WEIGHT_THRESHOLD) {
-    ship =
-      shipZone.base +
-      (weight - CONFIG.INTERMEDIATE_WEIGHT_THRESHOLD) *
-        CONFIG.INTERMEDIATE_WEIGHT_PER_KG;
-  }
-
-  if (zone === 'ZONE3' || zone === 'ZONE4') {
-    ship *= CONFIG.REMOTE_ZONE_MULTIPLIER;
-  }
-
-  return ship;
-}
-
-function computeHandling(itemCount: number): number {
-  if (itemCount > 20) return CONFIG.HANDLING_FEE * 2;
-  if (itemCount > 10) return CONFIG.HANDLING_FEE;
-  return 0;
-}
-
-function getCurrencyRate(currency: Currency): number {
-  return CONFIG.CURRENCY_RATES[currency] ?? 1.0;
-}
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-/* Report */
-
-function buildReport(
-  customers: Record<string, Customer>,
-  totalsByCustomer: Record<string, CustomerTotals>,
-  loyaltyPoints: Record<string, number>,
-  products: Record<string, Product>,
-  shippingZones: Record<string, ShippingZone>
-): { text: string; jsonData: ReportJsonRow[] } {
-  const lines: string[] = [];
-  const jsonData: ReportJsonRow[] = [];
-  let grandTotal = 0;
-  let totalTaxCollected = 0;
-
-  const sortedCustomerIds = Object.keys(totalsByCustomer).sort();
-
-  for (const cid of sortedCustomerIds) {
-    const cust = customers[cid] || ({} as Customer);
-
-    const name = cust.name || 'Unknown';
-    const level = cust.level || 'BASIC';
-    const zone = cust.shipping_zone || 'ZONE1';
-    const currency = cust.currency || 'EUR';
-
-    const agg = totalsByCustomer[cid];
-    const sub = agg.subtotal;
-
-    const firstOrderDate = agg.items[0]?.date || '';
-
-    const volumeDisc = computeVolumeDiscount(
-      sub,
-      level,
-      firstOrderDate
-    );
-    const loyaltyDisc = computeLoyaltyDiscount(
-      loyaltyPoints[cid] || 0
-    );
-
-    const {
-      volumeDisc: disc,
-      loyaltyDisc: loyaltyDiscount,
-      total: totalDiscount,
-    } = applyDiscountCap(volumeDisc, loyaltyDisc);
-
-    const taxable = sub - totalDiscount;
-    const tax = computeTax(agg.items, products, taxable);
-    const ship = computeShipping(
-      sub,
-      agg.weight,
-      zone,
-      shippingZones
-    );
-    const handling = computeHandling(agg.items.length);
-
-    const rate = getCurrencyRate(currency);
-    const total = round2(
-      (taxable + tax + ship + handling) * rate
-    );
-
-    grandTotal += total;
-    totalTaxCollected += tax * rate;
-
-    const pts = loyaltyPoints[cid] || 0;
-
-    lines.push(`Customer: ${name} (${cid})`);
-    lines.push(`Level: ${level} | Zone: ${zone} | Currency: ${currency}`);
-    lines.push(`Subtotal: ${sub.toFixed(2)}`);
-    lines.push(`Discount: ${totalDiscount.toFixed(2)}`);
-    lines.push(`  - Volume discount: ${disc.toFixed(2)}`);
-    lines.push(`  - Loyalty discount: ${loyaltyDiscount.toFixed(2)}`);
-
-    if (agg.morningBonus > 0) {
-      lines.push(
-        `  - Morning bonus: ${agg.morningBonus.toFixed(2)}`
-      );
+            orders.push({
+                id: parts[0],
+                customer_id: parts[1],
+                product_id: parts[2],
+                qty: qty,
+                unit_price: price,
+                date: parts[5],
+                promo_code: parts[6] || '',
+                time: parts[7] || '12:00'
+            });
+        } catch (e) {
+            // Skip silencieux
+            continue;
+        }
     }
 
-    lines.push(`Tax: ${(tax * rate).toFixed(2)}`);
-    lines.push(
-      `Shipping (${zone}, ${agg.weight.toFixed(1)}kg): ${ship.toFixed(2)}`
-    );
-
-    if (handling > 0) {
-      lines.push(
-        `Handling (${agg.items.length} items): ${handling.toFixed(2)}`
-      );
+    // Calcul des points de fidélité (première duplication)
+    const loyaltyPoints: Record<string, number> = {};
+    for (const o of orders) {
+        const cid = o.customer_id;
+        if (!loyaltyPoints[cid]) {
+            loyaltyPoints[cid] = 0;
+        }
+        // Calcul basé sur le prix de commande
+        loyaltyPoints[cid] += o.qty * o.unit_price * LOYALTY_RATIO;
     }
 
-    lines.push(`Total: ${total.toFixed(2)} ${currency}`);
-    lines.push(`Loyalty Points: ${Math.floor(pts)}`);
-    lines.push('');
+    // Groupement par client (logique métier mélangée avec aggregation)
+    const totalsByCustomer: Record<string, any> = {};
+    for (const o of orders) {
+        const cid = o.customer_id;
 
-    jsonData.push({
-      customer_id: cid,
-      name,
-      total,
-      currency,
-      loyalty_points: Math.floor(pts),
-    });
-  }
+        // Récupération du produit avec fallback
+        const prod = products[o.product_id] || {};
+        let basePrice = prod.price !== undefined ? prod.price : o.unit_price;
 
-  lines.push(`Grand Total: ${grandTotal.toFixed(2)} EUR`);
-  lines.push(
-    `Total Tax Collected: ${totalTaxCollected.toFixed(2)} EUR`
-  );
+        // Application de la promo (logique complexe et bugguée)
+        const promoCode = o.promo_code;
+        let discountRate = 0;
+        let fixedDiscount = 0;
 
-  return { text: lines.join('\n'), jsonData };
+        if (promoCode && promotions[promoCode]) {
+            const promo = promotions[promoCode];
+            if (promo.active) {
+                if (promo.type === 'PERCENTAGE') {
+                    discountRate = parseFloat(promo.value) / 100;
+                } else if (promo.type === 'FIXED') {
+                    // Bug intentionnel: appliqué par ligne au lieu de global
+                    fixedDiscount = parseFloat(promo.value);
+                }
+            }
+        }
+
+        // Calcul ligne avec réduction promo
+        let lineTotal = o.qty * basePrice * (1 - discountRate) - fixedDiscount * o.qty;
+
+        // Bonus matin (règle cachée basée sur l'heure)
+        const hour = parseInt(o.time.split(':')[0]);
+        let morningBonus = 0;
+        if (hour < 10) {
+            morningBonus = lineTotal * 0.03; // 3% de réduction supplémentaire
+        }
+        lineTotal = lineTotal - morningBonus;
+
+        if (!totalsByCustomer[cid]) {
+            totalsByCustomer[cid] = {
+                subtotal: 0.0,
+                items: [],
+                weight: 0.0,
+                promoDiscount: 0.0,
+                morningBonus: 0.0
+            };
+        }
+
+        totalsByCustomer[cid].subtotal += lineTotal;
+        totalsByCustomer[cid].weight += (prod.weight || 1.0) * o.qty;
+        totalsByCustomer[cid].items.push(o);
+        totalsByCustomer[cid].morningBonus += morningBonus;
+    }
+
+    // Génération du rapport (mélange calculs + formatage + I/O)
+    const outputLines: string[] = [];
+    const jsonData: any[] = [];
+    let grandTotal = 0.0;
+    let totalTaxCollected = 0.0;
+
+    // Tri par ID client (comportement à préserver)
+    const sortedCustomerIds = Object.keys(totalsByCustomer).sort();
+
+    for (const cid of sortedCustomerIds) {
+        const cust = customers[cid] || {};
+        const name = cust.name || 'Unknown';
+        const level = cust.level || 'BASIC';
+        const zone = cust.shipping_zone || 'ZONE1';
+        const currency = cust.currency || 'EUR';
+
+        const sub = totalsByCustomer[cid].subtotal;
+
+        // Remise par paliers (duplication #1 + magic numbers)
+        let disc = 0.0;
+        if (sub > 50) {
+            disc = sub * 0.05;
+        }
+        if (sub > 100) {
+            disc = sub * 0.10; // écrase la précédente (bug intentionnel)
+        }
+        if (sub > 500) {
+            disc = sub * 0.15;
+        }
+        if (sub > 1000 && level === 'PREMIUM') {
+            disc = sub * 0.20;
+        }
+
+        // Bonus weekend (règle cachée basée sur la date)
+        const firstOrderDate = totalsByCustomer[cid].items[0]?.date || '';
+        const dayOfWeek = firstOrderDate ? new Date(firstOrderDate).getDay() : 0;
+        if (dayOfWeek === 0 || dayOfWeek === 6) {
+            disc = disc * 1.05; // 5% de bonus sur la remise
+        }
+
+        // Calcul remise fidélité (duplication #2)
+        let loyaltyDiscount = 0.0;
+        const pts = loyaltyPoints[cid] || 0;
+        if (pts > 100) {
+            loyaltyDiscount = Math.min(pts * 0.1, 50.0);
+        }
+        if (pts > 500) {
+            loyaltyDiscount = Math.min(pts * 0.15, 100.0);
+        }
+
+        // Plafond de remise global (règle cachée)
+        let totalDiscount = disc + loyaltyDiscount;
+        if (totalDiscount > MAX_DISCOUNT) {
+            totalDiscount = MAX_DISCOUNT;
+            // On ajuste proportionnellement (logique complexe)
+            const ratio = MAX_DISCOUNT / (disc + loyaltyDiscount);
+            disc = disc * ratio;
+            loyaltyDiscount = loyaltyDiscount * ratio;
+        }
+
+        // Calcul taxe (avec gestion spéciale par produit)
+        const taxable = sub - totalDiscount;
+        let tax = 0.0;
+
+        // Vérifier si tous les produits sont taxables
+        let allTaxable = true;
+        for (const item of totalsByCustomer[cid].items) {
+            const prod = products[item.product_id];
+            if (prod && prod.taxable === false) {
+                allTaxable = false;
+                break;
+            }
+        }
+
+        if (allTaxable) {
+            tax = Math.round(taxable * TAX * 100) / 100; // Arrondi à 2 décimales
+        } else {
+            // Calcul taxe par ligne (plus complexe)
+            for (const item of totalsByCustomer[cid].items) {
+                const prod = products[item.product_id];
+                if (prod && prod.taxable !== false) {
+                    const itemTotal = item.qty * (prod.price || item.unit_price);
+                    tax += itemTotal * TAX;
+                }
+            }
+            tax = Math.round(tax * 100) / 100;
+        }
+
+        // Frais de port complexes (duplication #3)
+        let ship = 0.0;
+        const weight = totalsByCustomer[cid].weight;
+
+        if (sub < SHIPPING_LIMIT) {
+            const shipZone = shippingZones[zone] || { base: 5.0, per_kg: 0.5 };
+            const baseShip = shipZone.base;
+
+            if (weight > 10) {
+                ship = baseShip + (weight - 10) * shipZone.per_kg;
+            } else if (weight > 5) {
+                // Palier intermédiaire (règle cachée)
+                ship = baseShip + (weight - 5) * 0.3;
+            } else {
+                ship = baseShip;
+            }
+
+            // Majoration pour livraison en zone éloignée
+            if (zone === 'ZONE3' || zone === 'ZONE4') {
+                ship = ship * 1.2;
+            }
+        } else {
+            // Livraison gratuite mais frais de manutention pour poids élevé
+            if (weight > 20) {
+                ship = (weight - 20) * 0.25;
+            }
+        }
+
+        // Frais de gestion (magic number + condition cachée)
+        let handling = 0.0;
+        const itemCount = totalsByCustomer[cid].items.length;
+        if (itemCount > 10) {
+            handling = HANDLING_FEE;
+        }
+        if (itemCount > 20) {
+            handling = HANDLING_FEE * 2; // double pour très grosses commandes
+        }
+
+        // Conversion devise (règle cachée pour non-EUR)
+        let currencyRate = 1.0;
+        if (currency === 'USD') {
+            currencyRate = 1.1;
+        } else if (currency === 'GBP') {
+            currencyRate = 0.85;
+        }
+
+        const total = Math.round((taxable + tax + ship + handling) * currencyRate * 100) / 100;
+        grandTotal += total;
+        totalTaxCollected += tax * currencyRate;
+
+      
+        outputLines.push(`Customer: ${name} (${cid})`);
+        outputLines.push(`Level: ${level} | Zone: ${zone} | Currency: ${currency}`);
+        outputLines.push(`Subtotal: ${sub.toFixed(2)}`);
+        outputLines.push(`Discount: ${totalDiscount.toFixed(2)}`);
+        outputLines.push(`  - Volume discount: ${disc.toFixed(2)}`);
+        outputLines.push(`  - Loyalty discount: ${loyaltyDiscount.toFixed(2)}`);
+        if (totalsByCustomer[cid].morningBonus > 0) {
+            outputLines.push(`  - Morning bonus: ${totalsByCustomer[cid].morningBonus.toFixed(2)}`);
+        }
+        outputLines.push(`Tax: ${(tax * currencyRate).toFixed(2)}`);
+        outputLines.push(`Shipping (${zone}, ${weight.toFixed(1)}kg): ${ship.toFixed(2)}`);
+        if (handling > 0) {
+            outputLines.push(`Handling (${itemCount} items): ${handling.toFixed(2)}`);
+        }
+        outputLines.push(`Total: ${total.toFixed(2)} ${currency}`);
+        outputLines.push(`Loyalty Points: ${Math.floor(pts)}`);
+        outputLines.push('');
+
+        // Export JSON en parallèle (side effect)
+        jsonData.push({
+            customer_id: cid,
+            name: name,
+            total: total,
+            currency: currency,
+            loyalty_points: Math.floor(pts)
+        });
+    }
+
+    outputLines.push(`Grand Total: ${grandTotal.toFixed(2)} EUR`);
+    outputLines.push(`Total Tax Collected: ${totalTaxCollected.toFixed(2)} EUR`);
+
+    const result = outputLines.join('\n');
+
+    // Side effects: print + file write
+    console.log(result);
+
+    // Export JSON surprise
+    const outputPath = path.join(base, 'output.json');
+    fs.writeFileSync(outputPath, JSON.stringify(jsonData, null, 2));
+
+    return result;
 }
 
-/* Run */
-
-/* `run` retourne le texte sans rien afficher. C'est le caller qui
- * décide quoi faire. 
- */
-export function run(
-  baseDir: string = __dirname,
-  deps?: { fsx?: FileSystem; logger?: Logger }
-): string {
-  const fsx = deps?.fsx ?? new NodeFileSystem();
-  const logger = deps?.logger ?? NoopLogger;
-
-  const customers = loadCustomers(baseDir, fsx);
-  const products = loadProducts(baseDir, fsx, logger);
-  const shippingZones = loadShippingZones(baseDir, fsx);
-  const promotions = loadPromotions(baseDir, fsx, logger);
-  const orders = loadOrders(baseDir, fsx, logger);
-
-  const loyaltyPoints = computeLoyaltyPoints(orders);
-  const totalsByCustomer = buildTotalsByCustomer(
-    orders,
-    products,
-    promotions
-  );
-
-  const { text, jsonData } = buildReport(
-    customers,
-    totalsByCustomer,
-    loyaltyPoints,
-    products,
-    shippingZones
-  );
-
-  const outputPath = path.join(baseDir, 'output.json');
-  fsx.writeFileSync(
-    outputPath,
-    JSON.stringify(jsonData, null, 2)
-  );
-
-  return text;
+// Point d'entrée
+if (require.main === module) {
+    run();
 }
 
-const isMain =
-  typeof require !== 'undefined' && require.main === module;
-
-if (isMain) {
-  // C'est ici qu'on affiche le rapport.
-  console.log(run());
-}
+export { run };

@@ -2,13 +2,13 @@
   "name": "order-report-legacy",
   "version": "1.0.0",
   "description": "Legacy order report system - Refactoring test",
-  "main": "legacy/orderReportLegacy.ts",
+  "main": "src/orderReport.js",
   "scripts": {
-    "legacy": "ts-node legacy/orderReportLegacy.ts",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:golden": "jest tests/goldenMaster.test.js",
-    "test:unit": "jest tests/unit",
+    "legacy": "node src/orderReport.js",
+    "test": "npx jest",
+    "test:golden": "npx jest tests/goldenMaster.test.js",
+    "test:unit": "npx jest tests/unit",
+    "test:watch": "npx jest --watch",
     "generate-golden": "node scripts/generateGolden.js"
   },
   "devDependencies": {
