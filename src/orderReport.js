@@ -2,6 +2,55 @@ const fs = require('fs');
 const path = require('path');
 const { parseCsv, parseCsvSafe } = require('./csvParser');
 
+/**
+ * Modèles typés des entités (alignés sur orderReport.ts).
+ * @typedef {'BASIC'|'PREMIUM'|string} CustomerLevel
+ * @typedef {'EUR'|'USD'|'GBP'|string} Currency
+ * @typedef {'PERCENTAGE'|'FIXED'|string} PromotionType
+ * @typedef {Object} Customer
+ * @property {string} id
+ * @property {string} name
+ * @property {CustomerLevel} level
+ * @property {string} shipping_zone
+ * @property {Currency} currency
+ * @typedef {Object} Product
+ * @property {string} id
+ * @property {string} name
+ * @property {string} category
+ * @property {number} price
+ * @property {number} weight
+ * @property {boolean} taxable
+ * @typedef {Object} ShippingZone
+ * @property {string} zone
+ * @property {number} base
+ * @property {number} per_kg
+ * @typedef {Object} Promotion
+ * @property {string} code
+ * @property {PromotionType} type
+ * @property {string} value
+ * @property {boolean} active
+ * @typedef {Object} Order
+ * @property {string} id
+ * @property {string} customer_id
+ * @property {string} product_id
+ * @property {number} qty
+ * @property {number} unit_price
+ * @property {string} date
+ * @property {string} promo_code
+ * @property {string} time
+ * @typedef {Object} CustomerTotals
+ * @property {number} subtotal
+ * @property {Order[]} items
+ * @property {number} weight
+ * @property {number} morningBonus
+ * @typedef {Object} ReportJsonRow
+ * @property {string} customer_id
+ * @property {string} name
+ * @property {number} total
+ * @property {Currency} currency
+ * @property {number} loyalty_points
+ */
+
 // Répertoire des données (legacy) par défaut : depuis src/ on pointe vers legacy/
 const DEFAULT_DATA_DIR = path.join(__dirname, '..', 'legacy');
 
